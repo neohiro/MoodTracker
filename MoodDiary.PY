@@ -7,12 +7,12 @@ import csv
 import calendar
 import threading
 import tkinter as tk
+import itertools
 from tkinter import ttk, simpledialog, messagebox, filedialog
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.figure import Figure
-import matplotlib.patches as patches
 import numpy as np
 
 # Files
@@ -28,15 +28,16 @@ class MoodTrackerApp:
         # --- State Variables ---
         self.dark_mode = False
         self.current_user_password_hash = None
+        self.note_char_limit = 50 
         
-        # Matplotlib Annotation references (No longer needed, but kept as None for clarity)
+        # Matplotlib Annotation references
         self.annot = None
         self.annot_map = None
         
         # --- Config & Data Loading ---
         self.load_config()
         self.data = self.load_data()
-        self.migrate_data_structure() # Ensure old data works with new features
+        self.migrate_data_structure() 
         
         # --- UI Setup ---
         self.setup_colors()
@@ -48,10 +49,6 @@ class MoodTrackerApp:
             self.show_login_screen()
         else:
             self.build_main_app()
-
-        # --- Background Threads ---
-        # Reminders removed
-        pass
 
     def setup_colors(self):
         if self.dark_mode:
@@ -90,6 +87,7 @@ class MoodTrackerApp:
         self.style.configure("H2.TLabel", background=self.colors["card_bg"], foreground=self.colors["text_primary"], font=self.fonts["h2"])
         self.style.configure("Body.TLabel", background=self.colors["card_bg"], foreground=self.colors["text_secondary"], font=self.fonts["body"])
         self.style.configure("BgBody.TLabel", background=self.colors["bg"], foreground=self.colors["text_primary"], font=self.fonts["body"])
+        self.style.configure("Small.TLabel", background=self.colors["bg"], foreground=self.colors["text_secondary"], font=self.fonts["small"])
 
         # Checkbutton
         self.style.configure("TCheckbutton", background=self.colors["card_bg"], foreground=self.colors["text_primary"], font=self.fonts["body"])
@@ -107,9 +105,16 @@ class MoodTrackerApp:
         self.style.configure("Horizontal.TScale", background=self.colors["accent"], troughcolor=self.colors["border"], bordercolor=self.colors["card_bg"], lightcolor=self.colors["accent"], darkcolor=self.colors["accent"])
 
         # Notebook
-        self.style.configure("TNotebook", background=self.colors["bg"], borderwidth=0)
-        self.style.configure("TNotebook.Tab", padding=[20, 10], font=("Segoe UI", 11, "bold"), background=self.colors["bg"], foreground=self.colors["text_secondary"])
-        self.style.map("TNotebook.Tab", background=[("selected", self.colors["card_bg"])], foreground=[("selected", self.colors["accent"])])
+        self.style.configure("TNotebook", background=self.colors["bg"], borderwidth=0, tabmargins=[0, 0, 0, 0])
+        # Added 'width=25' and 'anchor="center"' to enforce equal size and centering
+        self.style.configure("TNotebook.Tab", padding=[20, 10], width=25, anchor="center", font=("Segoe UI", 11, "bold"), background=self.colors["bg"], foreground=self.colors["text_secondary"])
+        
+        # Explicitly map padding to prevent shrinking/jitter on selection
+        self.style.map("TNotebook.Tab", 
+            background=[("selected", self.colors["card_bg"])], 
+            foreground=[("selected", self.colors["accent"])],
+            padding=[("selected", [20, 10])] 
+        )
 
     # --- Data & Config Management ---
 
@@ -130,7 +135,6 @@ class MoodTrackerApp:
 
     def load_data(self):
         if not os.path.exists(DATA_FILE):
-            # Default structure with some sliders and new tag defaults
             return {
                 "kpis": [
                     {"name": "Happiness", "type": "slider"},
@@ -150,7 +154,6 @@ class MoodTrackerApp:
             json.dump(self.data, f, indent=4)
 
     def migrate_data_structure(self):
-        """Ensures kpis are dictionaries, not just strings from old version."""
         new_kpis = []
         for kpi in self.data['kpis']:
             if isinstance(kpi, str):
@@ -160,7 +163,6 @@ class MoodTrackerApp:
         self.data['kpis'] = new_kpis
 
     def get_today_entry(self):
-        """Finds today's entry in history, or returns None."""
         today = datetime.date.today().isoformat()
         for entry in self.data['history']:
             if entry['date'] == today:
@@ -168,13 +170,11 @@ class MoodTrackerApp:
         return None
     
     def get_daily_average_mood(self, entry):
-        """Calculates the average score of all slider KPIs for a single day entry."""
         slider_metrics = [k['name'] for k in self.data['kpis'] if k.get('type') == 'slider']
-        # Only include scores present for the day, default to 0 if key missing but count if present
         scores = [entry['scores'].get(name, 0) for name in slider_metrics if name in entry['scores']]
         
         if not scores:
-            return -1 # Use -1 to indicate no data for masking/plotting in heatmap
+            return -1 
         
         return sum(scores) / len(scores)
 
@@ -207,10 +207,6 @@ class MoodTrackerApp:
         else:
             messagebox.showerror("Error", "Incorrect Password")
 
-    # --- Reminder System (Removed) ---
-    def start_reminder_loop(self):
-        pass # Function removed as reminders cannot persist after app closure
-
     # --- Main Application Builder ---
 
     def build_main_app(self):
@@ -235,6 +231,7 @@ class MoodTrackerApp:
         self.check_vars = {}
         self.score_labels = {}
         self.note_text_widget = None
+        self.char_count_label = None
 
         self.build_input_tab()
         self.build_history_tab()
@@ -311,32 +308,41 @@ class MoodTrackerApp:
         btn_save = ttk.Button(footer_frame, text="Save Daily Log", style="Accent.TButton", command=self.save_today)
         btn_save.pack(fill='x', padx=100)
 
-        # Management Buttons (Stacked vertically below save)
+        # Management Buttons
         manage_frame = ttk.Frame(footer_frame, style="Main.TFrame")
         manage_frame.pack(pady=(15, 0))
         ttk.Button(manage_frame, text="- Remove Metric", style="Danger.TButton", command=self.remove_kpi_dialog).pack(fill='x', pady=5)
         ttk.Button(manage_frame, text="+ Add Metric", style="Secondary.TButton", command=self.add_kpi_dialog).pack(fill='x', pady=5)
         
-        # --- Note Section ---
+        # --- Note Section with LIMITER ---
         note_frame = ttk.Frame(footer_frame, style="Main.TFrame")
         note_frame.pack(fill='x', pady=(20, 10))
         ttk.Label(note_frame, text="Daily Note / Reflection:", style="BgBody.TLabel").pack(anchor="center")
-        self.note_text_widget = tk.Text(note_frame, height=8, width=25, font=self.fonts["body"], bd=1, relief="solid", bg=self.colors["card_bg"], fg=self.colors["text_primary"])
+        
+        self.note_text_widget = tk.Text(note_frame, height=5, width=40, font=self.fonts["body"], bd=1, relief="solid", bg=self.colors["card_bg"], fg=self.colors["text_primary"])
         self.note_text_widget.pack(pady=(5, 0))
-        if current_note: self.note_text_widget.insert("1.0", current_note)
+        
+        # Char Count Label
+        self.char_count_label = ttk.Label(note_frame, text=f"0/{self.note_char_limit}", style="Small.TLabel")
+        self.char_count_label.pack(anchor="e", padx=100)
+        
+        # Bind key release to update counter and limit text
+        self.note_text_widget.bind('<KeyRelease>', self.check_note_limit)
+        
+        if current_note: 
+            self.note_text_widget.insert("1.0", current_note)
+            self.check_note_limit() # Update count immediately
 
-        # --- Tags/Checkbox Section (Below Note) ---
+        # --- Tags/Checkbox Section ---
         if tag_kpis:
             tag_section_frame = ttk.Frame(footer_frame, style="Main.TFrame")
             tag_section_frame.pack(fill='x', pady=(10, 5))
 
             ttk.Label(tag_section_frame, text="Daily Activities:", style="BgBody.TLabel").pack(anchor="center", pady=(10, 5))
             
-            # Narrow frame to center the checkboxes visually under the note box
             tag_list_container = ttk.Frame(tag_section_frame, style="Main.TFrame", padding=10)
             tag_list_container.pack(anchor="center") 
 
-            # Render Tags inside the new container
             for kpi_data in tag_kpis:
                 name = kpi_data['name']
                 val = current_scores.get(name, 0)
@@ -344,9 +350,21 @@ class MoodTrackerApp:
                 var = tk.IntVar(value=int(val))
                 self.check_vars[name] = var
                 
-                # Checkboxes stack vertically
                 cb = ttk.Checkbutton(tag_list_container, text=name, variable=var, style="TCheckbutton")
                 cb.pack(anchor='w', pady=2)
+
+    def check_note_limit(self, event=None):
+        """Enforces character limit on note input."""
+        text = self.note_text_widget.get("1.0", "end-1c")
+        current_len = len(text)
+        
+        if current_len > self.note_char_limit:
+            # Truncate
+            self.note_text_widget.delete(f"1.0 + {self.note_char_limit} chars", "end")
+            text = self.note_text_widget.get("1.0", "end-1c")
+            current_len = len(text)
+            
+        self.char_count_label.config(text=f"{current_len}/{self.note_char_limit}")
 
     # --- Tab 2: History (Line Graph) ---
 
@@ -365,7 +383,6 @@ class MoodTrackerApp:
         self.ax = self.figure.add_subplot(111)
         self.canvas_widget = FigureCanvasTkAgg(self.figure, master=graph_card)
         self.canvas_widget.get_tk_widget().pack(fill='both', expand=True)
-        # Connect right-click event here, immediately after canvas setup
         self.canvas_widget.mpl_connect("button_press_event", self.right_click_graph_handler)
 
     # --- Tab 3: Insights & Heatmap ---
@@ -373,7 +390,6 @@ class MoodTrackerApp:
     def build_insights_tab(self):
         for widget in self.tab_insights.winfo_children(): widget.destroy()
 
-        # Split into Left (Heatmap) and Right (Stats)
         container = ttk.Frame(self.tab_insights, style="Main.TFrame")
         container.pack(fill='both', expand=True, padx=10, pady=10)
         
@@ -383,7 +399,6 @@ class MoodTrackerApp:
         right_col.pack(side='right', fill='both', expand=True, padx=10)
 
         # -- Heatmap Section --
-        # Title updated to reflect average mood
         ttk.Label(left_col, text="Mood Calendar (Average Daily Mood)", style="H2.TLabel", background=self.colors["bg"]).pack(anchor='w', pady=(0,10))
         
         map_card = ttk.Frame(left_col, style="Card.TFrame", padding=10)
@@ -394,8 +409,6 @@ class MoodTrackerApp:
         self.ax_map = self.fig_map.add_subplot(111)
         self.canvas_map = FigureCanvasTkAgg(self.fig_map, master=map_card)
         self.canvas_map.get_tk_widget().pack(fill='both', expand=True)
-
-        # Connect right-click event for the calendar
         self.canvas_map.mpl_connect("button_press_event", self.right_click_calendar)
 
         # -- Stats Section --
@@ -494,7 +507,6 @@ class MoodTrackerApp:
         rb_frame = ttk.Frame(dialog, style="Main.TFrame")
         rb_frame.pack()
         
-        # Custom style for radiobuttons to match theme
         s = ttk.Style()
         s.configure("TRadiobutton", background=self.colors["bg"], foreground=self.colors["text_primary"])
         
@@ -550,9 +562,12 @@ class MoodTrackerApp:
         # Sliders
         for k, scale in self.sliders.items(): new_scores[k] = float(scale.get())
         # Checkboxes
-        for k, var in self.check_vars.items(): new_scores[k] = float(var.get()) # Store as 0.0 or 1.0
+        for k, var in self.check_vars.items(): new_scores[k] = float(var.get())
 
-        note = self.note_text_widget.get("1.0", tk.END).strip()
+        note = self.note_text_widget.get("1.0", "end-1c").strip()
+        # Enforce strict limit on save just in case
+        if len(note) > self.note_char_limit:
+            note = note[:self.note_char_limit]
         
         entry = self.get_today_entry()
         if entry:
@@ -562,7 +577,7 @@ class MoodTrackerApp:
             self.data['history'].append({"date": today, "scores": new_scores, "note": note})
         
         self.save_data()
-        messagebox.showinfo("Saved", "Log saved!")
+        messagebox.showinfo("Saved", "Log saved successfully!")
 
     def on_tab_change(self, event):
         tab = event.widget.tab(event.widget.select(), "text").strip()
@@ -579,7 +594,7 @@ class MoodTrackerApp:
 
         dates = [e['date'] for e in self.data['history']]
         for kpi in self.data['kpis']:
-            if kpi.get('type') == 'tag': continue # Skip tags in line graph
+            if kpi.get('type') == 'tag': continue 
             scores = [e['scores'].get(kpi['name'], None) for e in self.data['history']]
             self.ax.plot(dates, scores, marker='o', label=kpi['name'])
 
@@ -588,7 +603,6 @@ class MoodTrackerApp:
         self.ax.grid(True, linestyle=':', alpha=0.3)
         self.figure.autofmt_xdate()
         
-        # Color axes
         self.ax.tick_params(colors=self.colors["text_secondary"])
         self.ax.spines['bottom'].set_color(self.colors["border"])
         self.ax.spines['left'].set_color(self.colors["border"])
@@ -598,52 +612,32 @@ class MoodTrackerApp:
         self.canvas_widget.draw()
 
     def right_click_graph_handler(self, event):
-        """Handles right-click (Button 3) listener for the line graph to show notes."""
         if event.button != 3 or event.inaxes != self.ax or not self.data['history']:
             return
         
         if event.xdata is not None:
-            # Get the actual data points used in the plot (dates are indices 0, 1, 2, ...)
             x_data_points = list(range(len(self.data['history'])))
-            
-            # Find closest date index
             distances = [abs(event.xdata - x) for x in x_data_points]
-            if not distances:
-                return
+            if not distances: return
                 
             min_dist = min(distances)
-            # If close enough (within half an index width, 0.5)
             if min_dist < 0.5: 
                 idx = x_data_points[distances.index(min_dist)]
                 entry = self.data['history'][idx]
                 
-                if entry.get('note', '').strip():
-                    messagebox.showinfo(
-                        f"Note for {entry['date']}", 
-                        f"Daily Reflection:\n\n{entry['note']}"
-                    )
-                else:
-                    messagebox.showinfo(
-                        f"Note for {entry['date']}", 
-                        "No note recorded for this day."
-                    )
-
+                note_content = entry.get('note', '').strip() or "No note recorded."
+                messagebox.showinfo(f"Note for {entry['date']}", f"Daily Reflection:\n\n{note_content}")
 
     def right_click_calendar(self, event):
-        """Handles right-click (Button 3) specifically for the Mood Calendar/Heatmap to show notes."""
         if event.button != 3 or event.inaxes != self.ax_map or not self.data['history']:
             return
             
         if event.xdata is not None and event.ydata is not None:
-            # Mapping grid coordinates (0-4 rows, 0-6 columns)
             col = int(round(event.xdata))
             row = int(round(event.ydata))
 
             if 0 <= row < 5 and 0 <= col < 7:
-                # Reverse-engineer the date from the grid index (must match refresh_insights logic)
                 today = datetime.date.today()
-                
-                # Calculate the index of the day from 0 (today) to 34 (34 days ago)
                 i = (4 - row) * 7 + (6 - col)
                 d = today - datetime.timedelta(days=i)
                 date_str = d.isoformat()
@@ -653,22 +647,11 @@ class MoodTrackerApp:
                 if entry:
                     avg_mood = self.get_daily_average_mood(entry)
                     mood_info = f"Avg Mood: {avg_mood:.1f}" if avg_mood >= 0 else "No score data"
+                    note_content = entry.get('note', '').strip() or "No detailed note."
                     
-                    if entry.get('note', '').strip():
-                        messagebox.showinfo(
-                            f"Note for {date_str}", 
-                            f"{mood_info}\n\nDaily Reflection:\n\n{entry['note']}"
-                        )
-                    elif avg_mood >= 0:
-                        messagebox.showinfo(
-                            f"Note for {date_str}", 
-                            f"{mood_info}\n\nNo detailed note recorded for this day."
-                        )
-                    else:
-                        messagebox.showinfo(
-                            f"Note for {date_str}", 
-                            "No data recorded for this day."
-                        )
+                    messagebox.showinfo(f"Note for {date_str}", f"{mood_info}\n\nDaily Reflection:\n\n{note_content}")
+                else:
+                    messagebox.showinfo(f"Note for {date_str}", "No data recorded for this day.")
 
 
     def get_stats_report_text(self):
@@ -691,20 +674,35 @@ class MoodTrackerApp:
                     fmt = f"{avg:.1f}/10" if k.get('type') == 'slider' else f"{avg*100:.0f}%"
                     txt += f"• {name}: {fmt}\n"
             
-            # Simple Correlation (Manual Pearson)
-            txt += "\nCORRELATIONS (Top Pair):\n"
+            # --- FULL CORRELATIONS ---
+            txt += "\nCORRELATIONS (All Pairs):\n"
             if len(self.data['history']) > 2 and len(slider_metrics) >= 2:
-                # Just calc for first two sliders for simplicity demo
-                m1, m2 = slider_metrics[0], slider_metrics[1]
-                v1 = [e['scores'].get(m1, 0) for e in self.data['history']]
-                v2 = [e['scores'].get(m2, 0) for e in self.data['history']]
-                if len(set(v1))>1 and len(set(v2))>1:
-                    corr = np.corrcoef(v1, v2)[0, 1]
-                    txt += f"• {m1} vs {m2}: {corr:.2f}\n"
-            
+                
+                calculated_correlations = []
+                
+                # Iterate through every possible unique pair of slider metrics
+                for m1, m2 in itertools.combinations(slider_metrics, 2):
+                    v1 = [e['scores'].get(m1, 0) for e in self.data['history']]
+                    v2 = [e['scores'].get(m2, 0) for e in self.data['history']]
+                    
+                    # Ensure variance exists (cannot correlate if all values are identical)
+                    if np.var(v1) > 0 and np.var(v2) > 0:
+                        corr = np.corrcoef(v1, v2)[0, 1]
+                        calculated_correlations.append((m1, m2, corr))
+                
+                # Sort by strength of correlation (absolute value), highest first
+                calculated_correlations.sort(key=lambda x: abs(x[2]), reverse=True)
+                
+                if calculated_correlations:
+                    for m1, m2, corr in calculated_correlations:
+                        txt += f"• {m1} vs {m2}: {corr:.2f}\n"
+                else:
+                    txt += "• Not enough variance data to calculate.\n"
+            else:
+                 txt += "• Need more data/metrics.\n"
+
             # Best Day
             txt += "\nBEST DAY:\n"
-            # Logic: Sum of all sliders
             best_date = None
             best_sum = -1
             for e in self.data['history']:
@@ -717,40 +715,30 @@ class MoodTrackerApp:
         return txt
 
     def refresh_insights(self):
-        # 1. Heatmap (Last 30 days grid of Average Daily Mood)
+        # 1. Heatmap
         self.ax_map.clear()
         self.fig_map.patch.set_facecolor(self.colors["card_bg"])
         
         if not self.data['history']:
             self.ax_map.text(0.5, 0.5, "No data", ha='center')
         else:
-            # --- Use Average Mood ---
-            # Create a dictionary mapping date (str) to average mood (float)
             history_dict = {e['date']: self.get_daily_average_mood(e) for e in self.data['history']}
-            # ------------------------
-            
-            # Create a 5x7 grid (approx a month)
             grid = np.zeros((5, 7))
             dates_map = [["" for _ in range(7)] for _ in range(5)]
-            
-            # Populate backward from today
             today = datetime.date.today()
             
-            for i in range(35): # 5 weeks
+            for i in range(35): 
                 d = today - datetime.timedelta(days=i)
-                row, col = (4 - (i // 7)), (6 - (i % 7)) # Fill bottom-right to top-left
-                val = history_dict.get(d.isoformat(), -1) # -1 for no data
+                row, col = (4 - (i // 7)), (6 - (i % 7)) 
+                val = history_dict.get(d.isoformat(), -1)
                 grid[row, col] = val
                 dates_map[row][col] = d.day
 
-            # Draw heatmap
-            cmap = plt.cm.RdYlGn # Red to Green
-            # Mask -1 values
+            cmap = plt.cm.RdYlGn
             masked_grid = np.ma.masked_where(grid < 0, grid)
             
             im = self.ax_map.imshow(masked_grid, cmap=cmap, vmin=0, vmax=10)
             
-            # Annotate dates
             for r in range(5):
                 for c in range(7):
                     txt = dates_map[r][c]
@@ -758,13 +746,11 @@ class MoodTrackerApp:
 
             self.ax_map.set_xticks([])
             self.ax_map.set_yticks([])
-            # --- Update Title ---
             self.ax_map.set_title("Last 35 Days: Average Daily Mood", color=self.colors["text_primary"])
-            # --------------------
         
         self.canvas_map.draw()
 
-        # 2. Stats Text (Using shared helper)
+        # 2. Stats Text
         txt = self.get_stats_report_text()
         self.stats_text.delete("1.0", tk.END)
         self.stats_text.insert("1.0", txt)
@@ -779,7 +765,6 @@ class MoodTrackerApp:
         
         try:
             with open(f, 'w', newline='') as csvfile:
-                # Ensure 'note' is in the fieldnames
                 fieldnames = ['date', 'note'] + [k['name'] for k in self.data['kpis']]
                 writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
                 writer.writeheader()
@@ -792,15 +777,14 @@ class MoodTrackerApp:
             messagebox.showerror("Error", str(e))
 
     def export_to_pdf(self):
-        # A4 Landscape dimensions in inches (11.69 x 8.27)
         A4_LANDSCAPE = (11.69, 8.27) 
         
         if not self.data['history']: return
         try:
             with PdfPages("mood_report.pdf") as pdf:
                 
-                # Page 1: Line Graph (Trends)
-                fig_graph = plt.figure(figsize=A4_LANDSCAPE) # Applied A4 Landscape
+                # Page 1: Line Graph
+                fig_graph = plt.figure(figsize=A4_LANDSCAPE)
                 dates = [e['date'] for e in self.data['history']]
                 for k in self.data['kpis']:
                     if k.get('type')=='slider':
@@ -810,16 +794,15 @@ class MoodTrackerApp:
                 pdf.savefig(fig_graph)
                 plt.close(fig_graph)
 
-                # Page 2: Insights and Mood Calendar (Combined)
-                fig_page2 = plt.figure(figsize=A4_LANDSCAPE) # Applied A4 Landscape
+                # Page 2: Insights and Mood Calendar
+                fig_page2 = plt.figure(figsize=A4_LANDSCAPE)
                 fig_page2.patch.set_facecolor('white')
 
-                # --- 2A. Mood Calendar (Heatmap) ---
-                ax_map = fig_page2.add_subplot(2, 1, 1) # Top half
+                # --- 2A. Mood Calendar ---
+                ax_map = fig_page2.add_subplot(2, 1, 1) 
                 
                 slider_metrics = [k['name'] for k in self.data['kpis'] if k.get('type') == 'slider']
                 if self.data['history'] and slider_metrics:
-                    # Calculate heatmap data
                     history_dict = {e['date']: self.get_daily_average_mood(e) for e in self.data['history']}
                     grid = np.zeros((5, 7))
                     dates_map = [["" for _ in range(7)] for _ in range(5)]
@@ -849,10 +832,9 @@ class MoodTrackerApp:
                     ax_map.axis('off')
 
                 # --- 2B. Insights Text ---
-                ax_text = fig_page2.add_subplot(2, 1, 2) # Bottom half
+                ax_text = fig_page2.add_subplot(2, 1, 2)
                 ax_text.axis('off')
                 txt = self.get_stats_report_text()
-                # Use a smaller font size for text to ensure it fits better in half a page
                 ax_text.text(0.05, 0.95, txt, transform=ax_text.transAxes, size=10, ha="left", va="top", wrap=True)
                 
                 fig_page2.tight_layout()
@@ -860,13 +842,16 @@ class MoodTrackerApp:
                 plt.close(fig_page2)
 
                 # Page 3: Raw Data Table
-                fig_t, ax = plt.subplots(figsize=A4_LANDSCAPE); ax.axis('off') # Applied A4 Landscape
+                fig_t, ax = plt.subplots(figsize=A4_LANDSCAPE); ax.axis('off')
                 
                 cols = ["Date", "Note"] + [k['name'] for k in self.data['kpis']] 
                 rows = []
                 for e in self.data['history']:
-                    # Normalize note data for display in table
                     note_text = e.get('note', '').replace('\n', ' ')
+                    # Double check limit here for PDF safety
+                    if len(note_text) > self.note_char_limit:
+                        note_text = note_text[:self.note_char_limit] + "..."
+                        
                     r = [e['date'], note_text]
                     for k in self.data['kpis']:
                         val = e['scores'].get(k['name'], "-")
@@ -876,35 +861,27 @@ class MoodTrackerApp:
                 
                 table = ax.table(cellText=rows, colLabels=cols, loc='center', cellLoc='center')
                 table.auto_set_font_size(False)
-                table.set_fontsize(8) # Use a smaller font size
+                table.set_fontsize(8)
 
-                # Define column widths as proportions of the axes width
-                column_widths_prop = [0.15] # Date (15%)
-                column_widths_prop.append(0.35) # Note (35%)
+                column_widths_prop = [0.15] # Date
+                column_widths_prop.append(0.35) # Note
                 
                 num_cols = len(cols)
-                num_rows = len(rows) + 1 # +1 for the header row
+                num_rows = len(rows) + 1
                 
-                # Remaining columns share the rest (50%)
                 remaining_width = 1.0 - sum(column_widths_prop)
                 remaining_cols = num_cols - len(column_widths_prop)
                 width_per_other_col = remaining_width / remaining_cols if remaining_cols > 0 else 0
                 column_widths_prop.extend([width_per_other_col] * remaining_cols)
                 
-                # --- FIX: Set column widths for all cells using the cell objects --- 
                 if num_cols > 0:
-                    # iterate over all cells and set width based on column index
                     for (r_idx, c_idx), cell in table._cells.items():
                         if c_idx < len(column_widths_prop):
                             try:
                                 cell.set_width(column_widths_prop[c_idx])
                             except Exception:
-                                # If set_width isn't supported for some reason, ignore and continue
                                 pass
-                # -------------------------------------------------------------
                 
-                # Enable text wrapping for the 'Note' column (index 1) and adjust alignment
-                # Iterate over all rows (including header, i=0)
                 for i in range(num_rows):
                     cell_key = (i, 1)
                     if cell_key in table._cells:
@@ -914,15 +891,13 @@ class MoodTrackerApp:
                             txt_obj.set_wrap(True)
                             txt_obj.set_ha('left')
                         except Exception:
-                            # If there is any issue with text object manipulation, continue gracefully
                             pass
                     
                 ax.set_title("Raw Data Log")
-                # Use fig.tight_layout() to let Matplotlib adjust the row heights based on wrapping
                 fig_t.tight_layout()
                 pdf.savefig(fig_t)
                 plt.close(fig_t)
-                
+            
             messagebox.showinfo("Success", "Saved mood_report.pdf")
         except Exception as e:
             messagebox.showerror("Error", str(e))
