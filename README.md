@@ -21,3 +21,8 @@ Alternatively, you can run from source by installing `matplotlib` and `numpy`:
 pip install matplotlib numpy
 python MoodDiary.PY
 ```
+
+## 📦 Installation
+
+You can download the compiled standalone release for your operating system (Windows, macOS, or Linux) directly from the **[Releases](../../releases)** tab. No Python installation is required! Just download the .zip for your OS, extract, and run.
+
